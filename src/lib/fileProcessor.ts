@@ -14,6 +14,8 @@ export interface BillingData {
   serialNo: string;
   lastColumnValue: string | number | null;
   lastColumnHeader: string;
+  secondLastColumnValue: string | number | null;
+  secondLastColumnHeader: string;
 }
 
 /**
@@ -97,21 +99,27 @@ const extractBillingData = async (zipFile: File): Promise<Map<string, BillingDat
 
       const headers = jsonData[0] as (string | null)[];
       const lastColumnIndex = headers.length - 1;
+      const secondLastColumnIndex = headers.length - 2;
       const lastColumnHeader = String(headers[lastColumnIndex] || `Column_${lastColumnIndex + 1}`);
+      const secondLastColumnHeader = String(headers[secondLastColumnIndex] || `Column_${secondLastColumnIndex + 1}`);
 
-      // Find serial number column - looking for column containing "serial"
+      // Find serial number column - looking for "new serial no" or "device_id"
       let serialColumnIndex = 0;
       headers.forEach((header, index) => {
-        if (header && typeof header === 'string' &&
-            (header.toLowerCase().includes('serial') || 
-             header.toLowerCase().includes('new serial') ||
-             header.toLowerCase().includes('sr') ||
-             header.toLowerCase().includes('meter'))) {
-          serialColumnIndex = index;
+        if (header && typeof header === 'string') {
+          const lowerHeader = header.toLowerCase();
+          if (lowerHeader.includes('new serial') ||
+              lowerHeader.includes('serial') || 
+              lowerHeader.includes('device_id') ||
+              lowerHeader.includes('device id') ||
+              lowerHeader.includes('sr') ||
+              lowerHeader.includes('meter')) {
+            serialColumnIndex = index;
+          }
         }
       });
 
-      console.log(`Processing ${fileName}: serial column=${serialColumnIndex}, last column=${lastColumnIndex}`);
+      console.log(`Processing ${fileName}: serial column=${serialColumnIndex}, last 2 columns=${secondLastColumnIndex},${lastColumnIndex}`);
 
       // Process each row (skip header)
       for (let i = 1; i < jsonData.length; i++) {
@@ -121,12 +129,15 @@ const extractBillingData = async (zipFile: File): Promise<Map<string, BillingDat
         const rawSerial = row[serialColumnIndex];
         const serialNo = String(rawSerial ?? '').trim();
         const lastColumnValue = row[lastColumnIndex];
+        const secondLastColumnValue = row[secondLastColumnIndex];
 
         if (serialNo && serialNo !== 'null' && serialNo !== 'undefined') {
           billingMap.set(serialNo, {
             serialNo,
             lastColumnValue,
             lastColumnHeader,
+            secondLastColumnValue,
+            secondLastColumnHeader,
           });
         }
       }
@@ -190,16 +201,38 @@ export const processFiles = async (
       };
     }
 
-    // Get headers and add new column for billing data
+    // Get headers and add new columns for billing data (last 2 columns)
     const headers = [...(jsonData[0] as string[])];
+    const miHeaders = jsonData[0] as (string | null)[];
 
-    // Get the header name from billing data
+    // Find device_id column in MI file
+    let deviceIdColumnIndex = -1;
+    miHeaders.forEach((header, index) => {
+      if (header && typeof header === 'string') {
+        const lowerHeader = header.toLowerCase();
+        if (lowerHeader.includes('device_id') ||
+            lowerHeader.includes('device id') ||
+            lowerHeader.includes('deviceid') ||
+            lowerHeader === 'device') {
+          deviceIdColumnIndex = index;
+        }
+      }
+    });
+
+    // Fallback to column F (index 5) if device_id not found
+    if (deviceIdColumnIndex === -1) {
+      console.log('device_id column not found, using column F (index 5)');
+      deviceIdColumnIndex = 5;
+    } else {
+      console.log(`Found device_id column at index ${deviceIdColumnIndex}`);
+    }
+
+    // Get the header names from billing data for last 2 columns
     const firstBillingEntry = billingData.values().next().value;
-    const newColumnHeader = firstBillingEntry?.lastColumnHeader || 'Billing_Data';
-    headers.push(newColumnHeader);
-
-    // Column F is index 5 (0-based) - "New Serial No."
-    const serialColumnIndex = 5;
+    const secondLastColumnHeader = firstBillingEntry?.secondLastColumnHeader || 'Billing_Col_1';
+    const lastColumnHeader = firstBillingEntry?.lastColumnHeader || 'Billing_Col_2';
+    headers.push(secondLastColumnHeader);
+    headers.push(lastColumnHeader);
 
     let matchedCount = 0;
     let unmatchedCount = 0;
@@ -211,18 +244,20 @@ export const processFiles = async (
       const row = [...(jsonData[i] || [])];
 
       // Ensure row has enough columns
-      while (row.length < headers.length - 1) {
+      while (row.length < headers.length - 2) {
         row.push(null);
       }
 
-      const rawSerial = row[serialColumnIndex];
-      const serialNo = String(rawSerial ?? '').trim();
-      const billingEntry = billingData.get(serialNo);
+      const rawDeviceId = row[deviceIdColumnIndex];
+      const deviceId = String(rawDeviceId ?? '').trim();
+      const billingEntry = billingData.get(deviceId);
 
       if (billingEntry) {
+        row.push(billingEntry.secondLastColumnValue);
         row.push(billingEntry.lastColumnValue);
         matchedCount++;
       } else {
+        row.push(null);
         row.push(null);
         unmatchedCount++;
       }
